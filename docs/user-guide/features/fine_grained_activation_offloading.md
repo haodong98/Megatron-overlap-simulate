@@ -60,18 +60,18 @@ Each module offloads its **input** activation to CPU during forward and reloads 
 Fine-grained offloading is compatible with CUDA graphs. When CUDA graph is enabled, the following constraints apply:
 
 - `attn_norm` and `mlp_norm` **cannot** be offloaded (they cross CUDA graph boundaries).
-- `cuda_graph_scope` must include `attn` and `moe_router`.
+- `cuda_graph_modules` must include `attn` and `moe_router`.
 - `cuda_graph_impl` must be `transformer_engine`.
 - Requires `torch >= 2.9.0` and `transformer_engine >= 2.14.0`.
 
 ```bash
-# Optional: defer D2H enqueue for offloads *outside* cuda_graph_scope (MoE experts; see below)
+# Optional: defer D2H enqueue for offloads *outside* cuda_graph_modules (MoE experts; see below)
 --delay-offload-until-cuda-graph
 ```
 
 **`--delay-offload-until-cuda-graph` (`TransformerConfig.delay_offload_until_cuda_graph`)**
 
-**Inside vs outside `cuda_graph_scope`.** Offload boundaries that lie **inside** the captured `cuda_graph_scope` (for example `qkv_linear`, `core_attn`, and `attn_proj` when `attn` is in scope) are part of CUDA graph **capture and replay**. Their offload-related work is replayed with the graph rather than re-driven from Python each step, so they do **not** incur the same per-step CPU launch overhead as a purely eager path.
+**Inside vs outside `cuda_graph_modules`.** Offload boundaries that lie **inside** the captured `cuda_graph_modules` (for example `qkv_linear`, `core_attn`, and `attn_proj` when `attn` is in scope) are part of CUDA graph **capture and replay**. Their offload-related work is replayed with the graph rather than re-driven from Python each step, so they do **not** incur the same per-step CPU launch overhead as a purely eager path.
 
 Boundaries that run **outside** the captured region still execute as normal eager PyTorch each forward—for the recommended MoE setup, that includes expert compute after a graphed `moe_router` (e.g. offloading `expert_fc1` / `moe_act`). For those groups, each `group_offload` would otherwise submit D2H work from the host as soon as the forward hits the commit point.
 

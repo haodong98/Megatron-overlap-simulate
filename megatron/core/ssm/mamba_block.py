@@ -23,7 +23,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.ssm.mamba_hybrid_layer_allocation import Symbols as LayerSymbols
 from megatron.core.transformer import TransformerConfig
-from megatron.core.transformer.enums import CudaGraphScope
+from megatron.core.transformer.enums import InferenceCudaGraphScope
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import GraphableMegatronModule, MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
@@ -207,7 +207,7 @@ class MambaStack(GraphableMegatronModule, MegatronModule):
                 kwargs.get('inference_context') is not None
                 or kwargs.get('inference_params') is not None
             )
-            and CudaGraphScope.full_iteration_inference in self.config.cuda_graph_scope
+            and self.config.inference_cuda_graph_scope == InferenceCudaGraphScope.block
         ):
             if kwargs['inference_context'].is_static_batching():
                 using_cuda_graph = kwargs['inference_context'].is_decode_only()
@@ -275,13 +275,7 @@ class MambaStack(GraphableMegatronModule, MegatronModule):
             inference_context.seqlen_offset = inference_context.sequence_len_offset
 
         if (
-            (
-                (
-                    self.config.cuda_graph_impl == "local"
-                    and CudaGraphScope.full_iteration not in self.config.cuda_graph_scope
-                )
-                or self.config.flash_decode
-            )
+            (self.config.cuda_graph_impl == "local" or self.config.flash_decode)
             and inference_context
             and inference_context.is_static_batching()
             and not self.training
