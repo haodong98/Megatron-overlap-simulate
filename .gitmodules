@@ -1,0 +1,3 @@
+[submodule "kernel_simulator"]
+	path = kernel_simulator
+	url = https://github.com/haodong98/kernel_simulator.git
