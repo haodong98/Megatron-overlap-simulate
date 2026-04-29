@@ -64,6 +64,55 @@ def test_parse_card_metadata_and_null_empty_shape() -> None:
     assert config.overlap.serialization_warn_threshold_explicit
 
 
+def test_parse_optional_cudnn_policy() -> None:
+    config = parse_config(
+        {
+            "version": 1,
+            "name": "cudnn_policy",
+            "cudnn_deterministic": "true",
+            "cudnn_benchmark": "false",
+            "kernel": {"family": "null", "implementation": "empty_range"},
+        }
+    )
+
+    assert config.cudnn_deterministic is True
+    assert config.cudnn_benchmark is False
+
+
+def test_parse_stage1_offset_runtime_and_cache_policy() -> None:
+    config = parse_config(
+        {
+            "version": 1,
+            "name": "stage1_offset",
+            "runtime": {
+                "comm_concurrency_mode": "separate_process_groups",
+                "nccl_profile": "controlled_ring_simple",
+            },
+            "cache_policy": "flushed",
+            "kernels": [
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+            ],
+            "overlap": {
+                "dependency_shape": "offset_sweep",
+                "offset_sweep": {
+                    "offsets_pct": [0.0, 0.5, 0.9],
+                    "direction": "b_leads_a",
+                    "delay_policy": "device_spin",
+                    "reference": "lead_single_median",
+                },
+            },
+        }
+    )
+
+    assert config.overlap.dependency_shape == "offset_sweep"
+    assert config.overlap.offset_sweep.offsets_pct == (0.0, 0.5, 0.9)
+    assert config.overlap.offset_sweep.direction == "b_leads_a"
+    assert config.runtime.comm_concurrency_mode == "separate_process_groups"
+    assert config.runtime.nccl_profile == "controlled_ring_simple"
+    assert config.cache_policy == "flushed"
+
+
 def test_parse_cube_cards() -> None:
     root = Path("kernel_simulator/cases/cube")
     for path in root.rglob("*.yaml"):
@@ -177,3 +226,87 @@ def test_verdict_lower_is_better_single_value_direction() -> None:
         }
     )
     assert _build_verdict(fail_config, base)["status"] == "fail"
+
+
+def test_verdict_structured_expected_schema() -> None:
+    base = {
+        "mode": "bucket_tail_hiding",
+        "result": {
+            "dependency_shape": {
+                "per_kernel": [],
+                "metrics": {
+                    "consumer_exposed_tail_ms": {"median_ms": 0.25},
+                    "consumer_hidden_by_later_producer_pct": {"median": 0.80},
+                },
+            }
+        },
+    }
+
+    config = parse_config(
+        {
+            "version": 1,
+            "name": "structured",
+            "expected": {
+                "consumer_exposed_tail_ms": {"op": "<=", "value": 0.5},
+                "consumer_hidden_by_later_producer_pct": {"range": [0.7, 0.9]},
+            },
+            "kernels": [
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+            ],
+        }
+    )
+    assert _build_verdict(config, base)["status"] == "pass"
+
+    config = parse_config(
+        {
+            "version": 1,
+            "name": "structured_mode",
+            "expected": {
+                "consumer_exposed_tail_ms": {"mode": "lower", "value": 0.1},
+            },
+            "kernels": [
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+            ],
+        }
+    )
+    assert _build_verdict(config, base)["status"] == "fail"
+
+
+def test_verdict_offset_sweep_metrics() -> None:
+    base = {
+        "mode": "offset_sweep",
+        "result": {
+            "offset_sweep": {
+                "offset_grid": [
+                    {
+                        "pairwise_overlap_pct_a": {"median": 0.7},
+                        "pairwise_overlap_pct_b": {"median": 0.8},
+                        "spin_corrected_tax_ms": {"median_ms": 0.05},
+                    },
+                    {
+                        "pairwise_overlap_pct_a": {"median": 0.6},
+                        "pairwise_overlap_pct_b": {"median": 0.65},
+                        "spin_corrected_tax_ms": {"median_ms": 0.08},
+                    },
+                ],
+                "per_kernel": [],
+            },
+            "derived": {},
+        },
+    }
+    config = parse_config(
+        {
+            "version": 1,
+            "name": "offset_verdict",
+            "expected": {"overlap_pct": 0.6, "spin_corrected_tax_ms": 0.1},
+            "kernels": [
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+                {"family": "gemm", "shape": {"m": 8, "k": 8, "n": 8}},
+            ],
+            "overlap": {"dependency_shape": "offset_sweep"},
+        }
+    )
+
+    assert _build_verdict(config, base)["status"] == "pass"

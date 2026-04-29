@@ -4,13 +4,16 @@ import pytest
 import torch
 
 from kernel_simulator.config import parse_config
+from kernel_simulator.offset import classify_offset_entry, offset_sample_metrics
 from kernel_simulator.replay import run_replay
 from kernel_simulator.runner import (
     _adaptive_overlap_threshold,
     _build_dependency_ops,
+    _dependency_metrics,
     _dependency_shape_plan,
     _pairwise_overlap,
     _profiler_observed_names,
+    _summarize_metric,
     _serialized_warning,
 )
 
@@ -182,6 +185,145 @@ def test_profiler_validation_separates_kernel_and_framework_names() -> None:
     ]
     assert observed["cuda_runtime_names"] == ["cudaLaunchKernel"]
     assert observed["framework_op_names"] == ["aten::matmul"]
+
+
+def test_fraction_metrics_do_not_report_ms_suffixes() -> None:
+    summary = _summarize_metric("comm_hidden_pct", [0.25, 0.75])
+
+    assert summary["median"] == 0.5
+    assert "median_ms" not in summary
+
+    timing = _summarize_metric("comm_exposed_tail_ms", [1.0, 3.0])
+    assert timing["median_ms"] == 2.0
+
+
+def test_dependency_metrics_emit_generic_consumer_aliases() -> None:
+    metrics = _dependency_metrics(
+        [
+            {
+                "label": "producer",
+                "group": 0,
+                "start_ms": 0.0,
+                "end_ms": 4.0,
+                "duration_ms": 4.0,
+            },
+            {
+                "label": "consumer",
+                "group": 0,
+                "start_ms": 4.0,
+                "end_ms": 8.0,
+                "duration_ms": 4.0,
+            },
+            {
+                "label": "producer",
+                "group": 1,
+                "start_ms": 5.0,
+                "end_ms": 9.0,
+                "duration_ms": 4.0,
+            },
+            {
+                "label": "consumer",
+                "group": 1,
+                "start_ms": 9.0,
+                "end_ms": 11.0,
+                "duration_ms": 2.0,
+            },
+        ]
+    )
+
+    assert metrics["consumer_hidden_by_later_producer_ms"] == 3.0
+    assert metrics["consumer_exposed_ms"] == 3.0
+    assert metrics["consumer_hidden_by_later_producer_pct"] == 0.5
+    assert metrics["comm_hidden_ms"] == metrics["consumer_hidden_by_later_producer_ms"]
+    assert metrics["comm_hidden_pct"] == metrics["consumer_hidden_by_later_producer_pct"]
+
+
+def test_prefetch_metrics_report_both_denominators() -> None:
+    metrics = _dependency_metrics(
+        [
+            {
+                "label": "prefetch",
+                "start_ms": 0.0,
+                "end_ms": 10.0,
+                "duration_ms": 10.0,
+            },
+            {
+                "label": "compute",
+                "start_ms": 2.0,
+                "end_ms": 6.0,
+                "duration_ms": 4.0,
+            },
+        ]
+    )
+
+    assert metrics["prefetch_hidden_ms"] == 4.0
+    assert metrics["prefetch_hidden_pct"] == 0.4
+    assert metrics["compute_covered_by_prefetch_pct"] == 1.0
+    assert metrics["prefetch_exposed_tail_ms"] == 4.0
+
+
+def test_offset_sample_metrics_positive_and_negative_offset() -> None:
+    positive = offset_sample_metrics(
+        {
+            "start_a_ms": 0.0,
+            "end_a_ms": 10.0,
+            "start_b_ms": 5.0,
+            "end_b_ms": 13.0,
+            "duration_a_ms": 10.0,
+            "duration_b_ms": 8.0,
+        },
+        single_a_ms=10.0,
+        single_b_ms=8.0,
+        serial_event_ms=18.5,
+        target_offset_ms=5.0,
+        spin_contamination_ms=0.2,
+    )
+    assert positive["actual_offset_ms"] == 5.0
+    assert positive["actual_overlap_ms"] == 5.0
+    assert positive["benefit_vs_serial_event_chain"] == 5.5
+    assert positive["tax_vs_ideal_offset_overlap"] == 0.0
+    assert positive["spin_corrected_tax_ms"] == -0.2
+
+    negative = offset_sample_metrics(
+        {
+            "start_a_ms": 4.0,
+            "end_a_ms": 14.0,
+            "start_b_ms": 0.0,
+            "end_b_ms": 8.0,
+            "duration_a_ms": 10.0,
+            "duration_b_ms": 8.0,
+        },
+        single_a_ms=10.0,
+        single_b_ms=8.0,
+        serial_event_ms=18.5,
+        target_offset_ms=-4.0,
+        spin_contamination_ms=0.0,
+    )
+    assert negative["actual_offset_ms"] == -4.0
+    assert negative["actual_overlap_ms"] == 4.0
+    assert negative["tax_vs_ideal_offset_overlap"] == 0.0
+
+
+def test_offset_classification_uses_noise_tolerance() -> None:
+    base = {
+        "confidence": "high",
+        "eps_ms": 0.1,
+        "benefit_vs_serial_event_chain": {"median_ms": 1.0},
+        "spin_corrected_tax_ms": {"median_ms": 0.05},
+    }
+    assert classify_offset_entry(base) == "clean_overlap"
+
+    contended = dict(base)
+    contended["spin_corrected_tax_ms"] = {"median_ms": 0.5}
+    assert classify_offset_entry(contended) == "beneficial_but_contended"
+
+    harmful = dict(base)
+    harmful["benefit_vs_serial_event_chain"] = {"median_ms": -0.2}
+    assert classify_offset_entry(harmful) == "harmful_overlap"
+
+    invalid = dict(base)
+    invalid["confidence"] = "invalid"
+    assert classify_offset_entry(invalid) == "invalid_or_low_overlap"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
