@@ -16,6 +16,12 @@ onelogger.err
 runs/
 /test_cases/
 **/dist/
+overlap_res/stage1_full/
+overlap_res/stage1_onecase_gemm_ar/[0-9]*/
+overlap_res/**/raw/
+overlap_res/**/nsys/
+overlap_res/**/nsys_cases/
+overlap_res/**/*.parquet
 
 # Sphinx documentation
 docs/_build

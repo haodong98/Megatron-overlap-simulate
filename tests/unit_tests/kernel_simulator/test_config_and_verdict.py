@@ -6,6 +6,25 @@ from kernel_simulator.config import parse_config
 from kernel_simulator.replay import _build_verdict
 
 
+class _FakeCuda:
+    def is_available(self) -> bool:
+        return False
+
+    def device_count(self) -> int:
+        return 4
+
+    def __init__(self) -> None:
+        self.device = None
+
+    def set_device(self, device) -> None:
+        self.device = device
+
+
+class _FakeTorch:
+    def __init__(self) -> None:
+        self.cuda = _FakeCuda()
+
+
 def test_parse_old_single_case_still_works() -> None:
     config = parse_config(
         {
@@ -79,6 +98,35 @@ def test_parse_optional_cudnn_policy() -> None:
     assert config.cudnn_benchmark is False
 
 
+def test_softmax_shape_accepts_hidden_alias(monkeypatch) -> None:
+    import pytest
+
+    pytest.importorskip("torch")
+    from kernel_simulator.runners.basic import _make_softmax_input
+
+    observed = {}
+
+    def fake_randn(size, *, device, dtype):
+        observed["size"] = size
+        return size
+
+    monkeypatch.setattr("kernel_simulator.runners.basic.torch.randn", fake_randn)
+
+    assert _make_softmax_input({"tokens": 4, "hidden": 8}, "cuda:0", "bf16") == (4, 8)
+    assert observed["size"] == (4, 8)
+
+
+def test_distributed_local_rank_device_selected_before_default_device(monkeypatch) -> None:
+    from kernel_simulator.replay import _set_distributed_local_device
+
+    fake = _FakeTorch()
+    monkeypatch.setenv("LOCAL_RANK", "3")
+
+    _set_distributed_local_device(fake)
+
+    assert fake.cuda.device == 3
+
+
 def test_parse_stage1_offset_runtime_and_cache_policy() -> None:
     config = parse_config(
         {
@@ -86,7 +134,7 @@ def test_parse_stage1_offset_runtime_and_cache_policy() -> None:
             "name": "stage1_offset",
             "runtime": {
                 "comm_concurrency_mode": "separate_process_groups",
-                "nccl_profile": "controlled_ring_simple",
+                "nccl_profile": "controlled_ring_ll",
             },
             "cache_policy": "flushed",
             "kernels": [
@@ -109,7 +157,7 @@ def test_parse_stage1_offset_runtime_and_cache_policy() -> None:
     assert config.overlap.offset_sweep.offsets_pct == (0.0, 0.5, 0.9)
     assert config.overlap.offset_sweep.direction == "b_leads_a"
     assert config.runtime.comm_concurrency_mode == "separate_process_groups"
-    assert config.runtime.nccl_profile == "controlled_ring_simple"
+    assert config.runtime.nccl_profile == "controlled_ring_ll"
     assert config.cache_policy == "flushed"
 
 

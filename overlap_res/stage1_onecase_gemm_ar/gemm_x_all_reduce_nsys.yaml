@@ -1,0 +1,40 @@
+version: 1
+name: stage1_smoke_deepseek_bf16_mlp_gemm_x_all_reduce_nsys
+device: cuda:0
+dtype: bf16
+warmup_iters: 5
+measure_iters: 5
+parallel:
+  distributed: true
+runtime:
+  comm_concurrency_mode: none
+  nccl_profile: controlled_ring_simple
+cache_policy: steady_warm
+overlap:
+  dependency_shape: offset_sweep
+  offset_sweep:
+    offsets_pct: [0.0, 0.5, 0.9]
+    direction: a_leads_b
+    delay_policy: device_spin
+    reference: single_a_median
+requires:
+  distributed: true
+  min_gpus: 4
+kernels:
+  - name: deepseek_mlp_gate_up_gemm_tp4
+    family: gemm
+    implementation: torch_matmul
+    phase: forward
+    dtype: bf16
+    # DeepSeek config proxy:
+    # local tokens = MBS * SEQ_LEN / TP = 2 * 4096 / 4 = 2048
+    # hidden = 7168
+    # ffn_hidden / TP = 16384 / 4 = 4096
+    shape: {m: 2048, k: 7168, n: 4096}
+  - name: tp_hidden_all_reduce_28mb
+    family: all_reduce
+    implementation: torch_distributed
+    phase: forward
+    dtype: bf16
+    # [local_tokens, hidden] bf16 = 2048 * 7168 * 2 bytes = 28 MiB
+    shape: {bytes: 29360128}

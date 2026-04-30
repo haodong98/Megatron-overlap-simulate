@@ -23,12 +23,15 @@ def test_stage1_manifest_generation_and_phase_rules(tmp_path) -> None:
     assert config.overlap.dependency_shape == "offset_sweep"
     assert config.selected_kernels()
 
-    # Stage-1 v1 deliberately excludes fwd x bwd in the canonical entry.
-    assert not any(
+    assert any(
         entry["a_phase"] == "forward" and entry["b_phase"] == "backward"
         for entry in manifest["entries"]
     )
     assert any(entry["a_phase"] == "backward" for entry in manifest["entries"])
+    assert not any(
+        entry["a_phase"] == "backward" and entry["b_phase"] == "backward"
+        for entry in manifest["entries"]
+    )
 
 
 def test_stage1_manifest_has_comm_group_modes(tmp_path) -> None:
@@ -44,6 +47,36 @@ def test_stage1_manifest_has_comm_group_modes(tmp_path) -> None:
     assert {"same_process_group", "separate_process_groups"}.issubset(modes)
     assert "controlled_ring_simple" in profiles
     assert "controlled_ring_ll128" in profiles
+
+
+def test_stage1_manifest_marks_proxy_and_sentinel_entries(tmp_path) -> None:
+    manifest = generate_stage1_manifest(tmp_path)
+
+    fp8_entry = next(
+        entry for entry in manifest["entries"] if entry["a_primitive"] == "fp8_dense_gemm"
+    )
+    assert fp8_entry["case"]["stage1"]["a_fidelity"] == "proxy"
+    assert fp8_entry["case"]["stage1"]["confidence_cap"] == "low"
+
+    assert manifest["sentinel_interval_seconds"] == 30 * 60
+    assert {entry["section"] for entry in manifest["sentinels"]} == {
+        "stage1_sentinel_compute",
+        "stage1_sentinel_comm",
+        "stage1_sentinel_comm_comm_optional",
+    }
+
+
+def test_stage1b_has_memory_comm_non_diagonal_subset(tmp_path) -> None:
+    manifest = generate_stage1_manifest(tmp_path)
+    pairs = {
+        (entry["a_primitive"], entry["b_primitive"], entry["a_shape_class"], entry["b_shape_class"])
+        for entry in manifest["entries"]
+        if entry["section"] == "stage1b_memory_comm"
+    }
+
+    assert ("d2d_copy_contiguous", "all_to_all", "large", "medium") in pairs
+    assert ("d2d_copy_noncontiguous", "all_to_all", "large", "medium") in pairs
+    assert not any(pair[0] == "memset_or_fill" for pair in pairs)
 
 
 def test_builtin_primitive_count_and_required_set() -> None:
